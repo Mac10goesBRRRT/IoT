@@ -2,174 +2,109 @@
 #include "freertos/task.h"
 #include "driver/gpio.h"
 #include "sdkconfig.h"
-#include "driver/i2c.h"
+// Wifi stuff
+#include "esp_system.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
+#include "esp_log.h"
+#include "nvs_flash.h"
+//WIFi@HOME
+#include "wifi_config.h"
 
 #define I2C_MASTER_PORT 0         // port number
 #define I2C_MASTER_SDA_IO 21      // GPIO data
 #define I2C_MASTER_SCL_IO 22      // GPIO clock
 #define I2C_MASTER_FREQ_HZ 400000 // I2C frequency
 
-#define ACK 1
-#define NACK 0
 
-i2c_config_t conf = {
-    .mode = I2C_MODE_MASTER,
-    .sda_io_num = I2C_MASTER_SDA_IO,
-    .sda_pullup_en = GPIO_PULLUP_ENABLE,
-    .scl_io_num = I2C_MASTER_SCL_IO,
-    .scl_pullup_en = GPIO_PULLUP_ENABLE,
-    .master.clk_speed = I2C_MASTER_FREQ_HZ};
-
-uint8_t i2c_register_read(
-    i2c_port_t port_num,
-    uint8_t dev_addr,
-    uint8_t reg_addr);
-
-static esp_err_t i2c_register_write(
-    i2c_port_t port_num,
-    uint8_t dev_addr,
-    uint8_t reg_addr,
-    uint8_t data);
-
-static esp_err_t i2c_multi_register_read(
-    i2c_port_t port_num,
-    uint8_t dev_addr,
-    uint8_t reg_addr,
-    uint8_t *data,
-    size_t size);
+static const char *TAG = "wifi station";
+bool wifi_established;
 
 uint8_t lux_read_sensor_id();
- u_int16_t lux_read_sensor_value(u_int8_t reg, u_int8_t addr);
+u_int16_t lux_read_sensor_value(u_int8_t reg, u_int8_t addr);
 
-void read_write_i2c (void * pvParameters);
+void read_write_i2c(void *pvParameters);
+
+void tcpip_adapter_init();
+
+static void wifi_event_handler(
+    void* arg, 
+    esp_event_base_t event_base, 
+    int32_t event_id, 
+    void* event_data);
 
 void app_main()
 {
-    i2c_param_config(I2C_MASTER_PORT, &conf);
-    i2c_driver_install(I2C_MASTER_PORT, conf.mode, 0, 0, 0);
-    //printf("0x%x\n",i2c_register_read(I2C_MASTER_PORT, 0x29, 0x0));
-    i2c_register_write(I2C_MASTER_PORT, 0x29, 0x0, 0x3);
-    i2c_register_write(I2C_MASTER_PORT, 0x29, 0x1, 0b00010010);
-    printf("beep boop hell hier: %d\n", lux_read_sensor_value(0x29,0));
+    //Initialize NVS
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+      ESP_ERROR_CHECK(nvs_flash_erase());
+      ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
+
+    ESP_LOGI(TAG, "ESP_WIFI_MODE_STA");
+    tcpip_adapter_init();
     /*TaskHandle_t xtask_main = NULL;
     xTaskCreate(&read_write_i2c, "readWritei2c", 4000, NULL, tskIDLE_PRIORITY, &xtask_main);
     configASSERT(xtask_main);*/
 }
 
-void read_write_i2c (void * pvParameters){
-    for(;;){
-        // printf("0x%x\n",lux_read_sensor_id());
-        //printf("0x%x\n", i2c_register_read(I2C_MASTER_PORT, 0x29, 0xA));
-        //printf("0x%x\n", i2c_register_read(I2C_MASTER_PORT, 0x29, 0xC));
-        //i2c_register_write(I2C_MASTER_PORT,0x29,0x2,0x0);
-        //printf("0x%x\n", i2c_register_read(I2C_MASTER_PORT, 0x29, 0xD));
-        //uint8_t data[2];
-        //i2c_multi_register_read(I2C_MASTER_PORT,0x29,0xC,&data,2);
-        //printf("0x%d%d\n", data[0],data[1]);
-        printf("beep boop hell hier: %d\n", lux_read_sensor_value(0x29,0));
-        //lux_read_sensor_value(1, 0x29);
-        vTaskDelay(200); //2 Sekunden
+void read_write_i2c(void *pvParameters)
+{
+    for (;;)
+    {
+        printf("beep boop hell hier: %d\n", lux_read_sensor_value(0x29, 0));
+        vTaskDelay(200); // 2 Sekunden
     }
 }
 
 
-uint8_t i2c_register_read(
-    i2c_port_t port_num,
-    uint8_t dev_addr,
-    uint8_t reg_addr)
+void tcpip_adapter_init()
 {
-    uint8_t data;
-    // port_num I2C Port Num, dev_addr Slave I2C, reg_addr register I2C
-    reg_addr += 128;
-    i2c_cmd_handle_t cmd;
-    uint8_t addr = dev_addr << 1;
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
 
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, addr, ACK);
-    i2c_master_write_byte(cmd, reg_addr, ACK);
-    i2c_master_start(cmd);
-    addr += 1;
-    i2c_master_write_byte(cmd, addr, ACK);
-    i2c_master_read_byte(cmd, &data, NACK);
-    i2c_master_stop(cmd);
-    i2c_master_cmd_begin(I2C_MASTER_PORT, cmd, 10);
-    i2c_cmd_link_delete(cmd);
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    cfg.nvs_enable = false;
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
 
-    return data;
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        WIFI_EVENT, ESP_EVENT_ANY_ID, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        IP_EVENT, IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL));
+    ESP_ERROR_CHECK(esp_event_handler_register(
+        IP_EVENT, IP_EVENT_STA_LOST_IP, &wifi_event_handler, NULL));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = ESP_WIFI_SSID,
+            .password = ESP_WIFI_PASS,
+        },
+    };
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(ESP_IF_WIFI_STA, &wifi_config));
+    ESP_ERROR_CHECK(esp_wifi_start());
 }
 
-uint8_t lux_read_sensor_id()
-{
-    for (uint8_t i = 0; i < 0xFF; i++)
+
+static void wifi_event_handler(void* arg, esp_event_base_t event_base,
+                                int32_t event_id, void* event_data)
     {
-        uint8_t data = i2c_register_read(I2C_MASTER_PORT, i, 0xA);
-        if (data == 0x50)
-        {
-            return i;
+        if(event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+            wifi_established =false;
+            ESP_LOGI(TAG, "connect to the AP");
+            esp_wifi_connect();
+        } else if(event_base == WIFI_EVENT && event_id == 
+            WIFI_EVENT_STA_DISCONNECTED) {
+            wifi_established = false;
+            ESP_LOGI(TAG, "retry to connect to the AP");
+            esp_wifi_connect();
+        } else if(event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP){
+            ip_event_got_ip_t* event = (ip_event_got_ip_t*) event_data;
+            char* buf[20];
+            ESP_LOGI(TAG, "got ip:%s", esp_ip4addr_ntoa(&event->ip_info.ip, buf, sizeof(buf)));
+            wifi_established = true;
+        } else {
+            ESP_LOGI(TAG, "unhandled event (%s) with ID %d", event_base, (int)event_id);
         }
     }
-    return -1;
-}
-
-static esp_err_t i2c_register_write(
-    i2c_port_t port_num,
-    uint8_t dev_addr,
-    uint8_t reg_addr,
-    uint8_t data)
-{
-    //port_num i2c port, dev_addr Slave addr
-    reg_addr += 128;
-    i2c_cmd_handle_t cmd;
-    uint8_t addr = dev_addr << 1;
-    cmd = i2c_cmd_link_create();
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, addr, ACK);
-    i2c_master_write_byte(cmd, reg_addr, ACK);
-    i2c_master_write_byte(cmd, data, ACK);
-    i2c_master_stop(cmd);
-    i2c_master_cmd_begin(I2C_MASTER_PORT, cmd, 10);
-    i2c_cmd_link_delete(cmd);
-
-    return 0;
-}
-
-static esp_err_t i2c_multi_register_read(
-    i2c_port_t port_num,
-    uint8_t dev_addr,
-    uint8_t reg_addr,
-    uint8_t *data,
-    size_t size){
-    // port_num I2C Port Num, dev_addr Slave I2C, reg_addr register I2C
-    reg_addr += 128;
-    i2c_cmd_handle_t cmd;
-    uint8_t addr = dev_addr << 1;
-    cmd = i2c_cmd_link_create();
-    //Start + Slave Addr + Write
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, addr, ACK);
-    //Register Addr
-    i2c_master_write_byte(cmd, reg_addr, ACK);
-    //Start + Slave Addr + Read
-    addr += 1;
-    i2c_master_start(cmd);
-    i2c_master_write_byte(cmd, addr, ACK);
-    //Jetzt lesen
-    i2c_master_read(cmd, data, size, NACK);
-    i2c_master_stop(cmd);
-    i2c_master_cmd_begin(I2C_MASTER_PORT, cmd, 10);
-    i2c_cmd_link_delete(cmd);
-
-    return 0;
-    }
-
-    u_int16_t lux_read_sensor_value(u_int8_t addr, u_int8_t reg){
-        reg = reg*2 + 0xC;
-        uint8_t data[2];
-        i2c_multi_register_read(I2C_MASTER_PORT, addr, reg, &data, 2);
-        u_int16_t value = data[1];
-        value = value << 8;
-        value = value | data[0];
-        return value;
-    }
-    
